@@ -40,13 +40,20 @@ async function obtenerYGuardarTasaBCV() {
   const dataCO = respuestaCO.data;
   const usd_cop = (Number(dataCO.compra) + Number(dataCO.venta)) / 2;
 
-  const ves_cop = usd_cop / usd_ves;
+  // Revisamos si la tasa anterior tenía el VES/COP protegido manualmente
+  const anteriorResultado = await pool.query(
+    'SELECT ves_cop, ves_cop_manual FROM tasas_cambio ORDER BY fecha DESC, created_at DESC LIMIT 1'
+  );
+  const anterior = anteriorResultado.rows[0];
+
+  const usarManual = anterior?.ves_cop_manual === true;
+  const ves_cop = usarManual ? Number(anterior.ves_cop) : usd_cop / usd_ves;
 
   const resultado = await pool.query(
-    `INSERT INTO tasas_cambio (fecha, usd_ves, usd_cop, ves_cop, fuente)
-     VALUES (CURRENT_DATE, $1, $2, $3, 'BCV')
+    `INSERT INTO tasas_cambio (fecha, usd_ves, usd_cop, ves_cop, ves_cop_manual, fuente)
+     VALUES (CURRENT_DATE, $1, $2, $3, $4, 'BCV')
      RETURNING *`,
-    [usd_ves, usd_cop, ves_cop]
+    [usd_ves, usd_cop, ves_cop, usarManual]
   );
 
   return resultado.rows[0];
@@ -87,10 +94,59 @@ async function listarHistorialTasas(req, res) {
   }
 }
 
+// Permite editar manualmente solo el cruce VES/COP, sin tocar usd_ves ni usd_cop
+async function actualizarVesCop(req, res) {
+  const { ves_cop } = req.body;
+
+  if (ves_cop == null || isNaN(Number(ves_cop))) {
+    return res.status(400).json({ message: 'ves_cop debe ser un número válido' });
+  }
+
+  try {
+    const resultado = await pool.query(
+      `UPDATE tasas_cambio
+       SET ves_cop = $1, ves_cop_manual = true
+       WHERE id = (SELECT id FROM tasas_cambio ORDER BY fecha DESC, created_at DESC LIMIT 1)
+       RETURNING *`,
+      [ves_cop]
+    );
+
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({ message: 'No hay ninguna tasa registrada todavía' });
+    }
+
+    res.json(resultado.rows[0]);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al actualizar VES/COP', error: error.message });
+  }
+}
+
+// Restablece el cálculo automático de VES/COP (quita la protección manual)
+async function restablecerVesCopAutomatico(req, res) {
+  try {
+    const resultado = await pool.query(
+      `UPDATE tasas_cambio
+       SET ves_cop_manual = false, ves_cop = usd_cop / usd_ves
+       WHERE id = (SELECT id FROM tasas_cambio ORDER BY fecha DESC, created_at DESC LIMIT 1)
+       RETURNING *`
+    );
+
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({ message: 'No hay ninguna tasa registrada todavía' });
+    }
+
+    res.json(resultado.rows[0]);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al restablecer VES/COP', error: error.message });
+  }
+}
+
 module.exports = {
   registrarTasaManual,
   actualizarTasaAutomatica,
   obtenerTasaActual,
   listarHistorialTasas,
-  obtenerYGuardarTasaBCV 
+  obtenerYGuardarTasaBCV,
+  actualizarVesCop,
+  restablecerVesCopAutomatico
 };

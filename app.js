@@ -8,6 +8,7 @@ const productosRoutes = require('./modules/productos/productos.routes');
 const ventasRoutes = require('./modules/ventas/ventas.routes');
 const tasasRoutes = require('./modules/tasas/tasas.routes');
 const reportesRoutes = require('./modules/reportes/reportes.routes');
+const metodosPagoRoutes = require('./modules/metodos-pago/metodos-pago.routes');
 
 const iniciarCronTasas = require('./utils/cronTasas');
 const app = express();
@@ -26,6 +27,7 @@ app.get('/api/health', async (req, res) => {
     res.status(500).json({ status: 'error', message: error.message });
   }
 });
+app.use('/api/metodos-pago', metodosPagoRoutes);
 app.use('/api/tasas', tasasRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/usuarios', usuariosRoutes);

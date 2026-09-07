@@ -7,7 +7,8 @@ const {
   ventasPorMetodoPago,
   ventasPorMoneda,
   ventasDiarias,
-  resumenDashboard
+  resumenDashboard,
+  menorRotacion
 } = require('./reportes.controller');
 
 router.get('/productos-mas-vendidos', verificarToken, verificarRol('admin'), productosMasVendidos);
@@ -15,5 +16,6 @@ router.get('/ventas-por-metodo-pago', verificarToken, verificarRol('admin'), ven
 router.get('/ventas-por-moneda', verificarToken, verificarRol('admin'), ventasPorMoneda);
 router.get('/ventas-diarias', verificarToken, verificarRol('admin'), ventasDiarias);
 router.get('/resumen', verificarToken, verificarRol('admin'), resumenDashboard);
+router.get('/menor-rotacion', verificarToken, verificarRol('admin'), menorRotacion);
 
 module.exports = router;
