@@ -89,26 +89,59 @@ async function registrarAbono(req, res) {
     return res.status(400).json({ message: 'Faltan datos requeridos' });
   }
 
+  const client = await pool.connect();
+
   try {
-    const tasaResultado = await pool.query(
+    await client.query('BEGIN');
+
+    const tasaResultado = await client.query(
       'SELECT * FROM tasas_cambio ORDER BY fecha DESC, created_at DESC LIMIT 1'
     );
     if (tasaResultado.rows.length === 0) {
-      return res.status(400).json({ message: 'No hay tasa de cambio registrada' });
+      throw new Error('No hay tasa de cambio registrada');
     }
     const tasa = tasaResultado.rows[0];
     const montoUsd = convertirAUSD(monto, moneda, tasa);
 
-    const resultado = await pool.query(
+    const abonoResultado = await client.query(
       `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, metodo_pago_id, sesion_caja_id, referencia, nota, usuario_id)
        VALUES ($1, 'abono', $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [cliente_id, moneda, monto, montoUsd, metodo_pago_id, sesion_caja_id || null, referencia || null, nota || null, usuario_id]
     );
 
-    res.status(201).json(resultado.rows[0]);
+    // Aplica el abono a las deudas más antiguas primero (FIFO), saldando ventas fiadas cuando corresponda
+    let restanteAbonoUSD = montoUsd;
+    const cargosPendientes = await client.query(
+      `SELECT * FROM movimientos_cuenta
+       WHERE cliente_id = $1 AND tipo = 'cargo' AND saldo_pendiente_usd > 0.01
+       ORDER BY fecha ASC
+       FOR UPDATE`,
+      [cliente_id]
+    );
+
+    for (const cargo of cargosPendientes.rows) {
+      if (restanteAbonoUSD <= 0.01) break;
+
+      const aplicar = Math.min(restanteAbonoUSD, Number(cargo.saldo_pendiente_usd));
+      const nuevoSaldo = Number(cargo.saldo_pendiente_usd) - aplicar;
+
+      await client.query('UPDATE movimientos_cuenta SET saldo_pendiente_usd = $1 WHERE id = $2', [nuevoSaldo, cargo.id]);
+      restanteAbonoUSD -= aplicar;
+
+      // Si esta venta fiada quedó saldada, se marca como completada (ahí sí cuenta como venta real)
+      if (nuevoSaldo <= 0.01 && cargo.venta_id) {
+        await client.query(`UPDATE ventas SET estado = 'completada' WHERE id = $1`, [cargo.venta_id]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json(abonoResultado.rows[0]);
   } catch (error) {
+    await client.query('ROLLBACK');
     res.status(500).json({ message: 'Error al registrar abono', error: error.message });
+  } finally {
+    client.release();
   }
 }
 

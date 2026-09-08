@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { convertirAUSD } = require('../../utils/conversionMoneda');
+const { convertirAUSD, convertirDesdeUSD } = require('../../utils/conversionMoneda');
 
 function generarNumeroVenta() {
   const timestamp = Date.now().toString().slice(-10);
@@ -17,7 +17,7 @@ async function obtenerTasaVigente(client) {
 }
 
 async function crearVenta(req, res) {
-  const { productos, pagos, cliente_id, sesion_caja_id, moneda_venta } = req.body;
+  const { productos, pagos, cliente_id, sesion_caja_id, moneda_venta, moneda_vuelto } = req.body;
   const usuario_id = req.usuario.id;
 
   if (!productos || productos.length === 0) {
@@ -52,7 +52,6 @@ async function crearVenta(req, res) {
         throw new Error(`Stock insuficiente para "${producto.nombre}" (disponible: ${producto.stock})`);
       }
 
-      // Determina el precio exacto a usar: precio fijo manual (si aplica a la moneda de venta) o conversión normal
       let precioUnitarioUSD;
       let precioUnitarioOriginal;
       let monedaOriginal;
@@ -92,7 +91,10 @@ async function crearVenta(req, res) {
       ]);
     }
 
-    let totalPagadoUSD = 0;
+    // ===== Procesar pagos: SOLO se guarda lo que realmente se aplica a la venta =====
+    // El excedente (vuelto) nunca se registra como pago — evita "inflar" ingresos con dinero devuelto.
+    let restanteUSD = totalUSD;
+    let excedenteUSD = 0;
     const pagosCalculados = [];
 
     for (const pago of pagos) {
@@ -104,25 +106,52 @@ async function crearVenta(req, res) {
         throw new Error('Método de pago inválido');
       }
 
-      const montoEquivalenteUSD = convertirAUSD(pago.monto, pago.moneda, tasa);
-      totalPagadoUSD += montoEquivalenteUSD;
-      pagosCalculados.push({ ...pago, monto_equivalente_usd: montoEquivalenteUSD });
+      const montoIngresadoUSD = convertirAUSD(pago.monto, pago.moneda, tasa);
+
+      if (restanteUSD <= 0.0001) {
+        // La venta ya quedó cubierta por líneas anteriores; esta línea es 100% vuelto
+        excedenteUSD += montoIngresadoUSD;
+        continue;
+      }
+
+      if (montoIngresadoUSD <= restanteUSD + 0.0001) {
+        // Se aplica completo a la venta
+        pagosCalculados.push({ ...pago, monto: pago.monto, monto_equivalente_usd: montoIngresadoUSD });
+        restanteUSD -= montoIngresadoUSD;
+      } else {
+        // Esta línea cubre lo que falta y además sobra vuelto
+        const montoAplicadoUSD = restanteUSD;
+        const montoAplicadoOriginal = convertirDesdeUSD(montoAplicadoUSD, pago.moneda, tasa);
+
+        pagosCalculados.push({ ...pago, monto: montoAplicadoOriginal, monto_equivalente_usd: montoAplicadoUSD });
+        excedenteUSD += montoIngresadoUSD - montoAplicadoUSD;
+        restanteUSD = 0;
+      }
     }
 
-    // Si falta dinero por cubrir, solo se permite si hay un cliente asignado (fiado)
-    const faltante = totalUSD - totalPagadoUSD;
-    if (faltante > 0.05 && !cliente_id) {
+    // restanteUSD ahora es exactamente lo que falta por pagar (0 si se cubrió todo)
+    if (restanteUSD > 0.05 && !cliente_id) {
       throw new Error(
-        `El monto pagado (${totalPagadoUSD.toFixed(2)} USD) es menor al total de la venta (${totalUSD.toFixed(2)} USD)`
+        `El monto pagado es menor al total de la venta (faltan ${restanteUSD.toFixed(2)} USD). Asigna un cliente para fiar el resto.`
       );
+    }
+
+    const esFiado = restanteUSD > 0.05;
+    const estadoVenta = esFiado ? 'fiado' : 'completada';
+
+    let vueltoMonedaFinal = null;
+    let vueltoMontoFinal = null;
+    if (excedenteUSD > 0.05) {
+      vueltoMonedaFinal = moneda_vuelto || moneda_venta || 'USD';
+      vueltoMontoFinal = convertirDesdeUSD(excedenteUSD, vueltoMonedaFinal, tasa);
     }
 
     const numeroVenta = generarNumeroVenta();
     const ventaResultado = await client.query(
-      `INSERT INTO ventas (numero_venta, usuario_id, total_usd, tasa_id, estado, cliente_id, sesion_caja_id)
-       VALUES ($1, $2, $3, $4, 'completada', $5, $6)
+      `INSERT INTO ventas (numero_venta, usuario_id, total_usd, tasa_id, estado, cliente_id, sesion_caja_id, vuelto_moneda, vuelto_monto)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [numeroVenta, usuario_id, totalUSD, tasa.id, cliente_id || null, sesion_caja_id || null]
+      [numeroVenta, usuario_id, totalUSD, tasa.id, estadoVenta, cliente_id || null, sesion_caja_id || null, vueltoMonedaFinal, vueltoMontoFinal]
     );
     const venta = ventaResultado.rows[0];
 
@@ -145,12 +174,12 @@ async function crearVenta(req, res) {
       );
     }
 
-    // Si quedó saldo sin cubrir y hay cliente, se registra como cargo (fiado)
-    if (faltante > 0.05 && cliente_id) {
+    // Si quedó saldo sin cubrir, se registra el cargo con su propio saldo pendiente rastreable
+    if (esFiado) {
       await client.query(
-        `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, venta_id, sesion_caja_id, usuario_id)
-         VALUES ($1, 'cargo', 'USD', $2, $2, $3, $4, $5)`,
-        [cliente_id, faltante, venta.id, sesion_caja_id || null, usuario_id]
+        `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, saldo_pendiente_usd, venta_id, sesion_caja_id, usuario_id)
+         VALUES ($1, 'cargo', 'USD', $2, $2, $2, $3, $4, $5)`,
+        [cliente_id, restanteUSD, venta.id, sesion_caja_id || null, usuario_id]
       );
     }
 
@@ -160,7 +189,11 @@ async function crearVenta(req, res) {
       venta,
       detalles,
       pagos: pagosCalculados,
-      vuelto_usd: Math.max(0, totalPagadoUSD - totalUSD)
+      vuelto_usd: excedenteUSD,
+      vuelto_moneda: vueltoMonedaFinal,
+      vuelto_monto: vueltoMontoFinal,
+      es_fiado: esFiado,
+      saldo_fiado_usd: esFiado ? restanteUSD : 0
     });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -178,11 +211,13 @@ async function listarVentas(req, res) {
       SELECT
         v.*,
         u.nombre AS vendedor,
+        c.nombre AS cliente_nombre,
         COALESCE(SUM(CASE WHEN pv.moneda = 'USD' THEN pv.monto END), 0) AS monto_usd,
         COALESCE(SUM(CASE WHEN pv.moneda = 'COP' THEN pv.monto END), 0) AS monto_cop,
         COALESCE(SUM(CASE WHEN pv.moneda = 'VES' THEN pv.monto END), 0) AS monto_ves
       FROM ventas v
       JOIN usuarios u ON u.id = v.usuario_id
+      LEFT JOIN clientes c ON c.id = v.cliente_id
       LEFT JOIN pagos_venta pv ON pv.venta_id = v.id
     `;
     const params = [];
@@ -192,7 +227,7 @@ async function listarVentas(req, res) {
       params.push(desde, hasta);
     }
 
-    query += ` GROUP BY v.id, u.nombre ORDER BY v.fecha DESC`;
+    query += ` GROUP BY v.id, u.nombre, c.nombre ORDER BY v.fecha DESC`;
 
     const resultado = await pool.query(query, params);
     res.json(resultado.rows);
@@ -205,10 +240,11 @@ async function obtenerVentaPorId(req, res) {
   const { id } = req.params;
 
   try {
-    const venta = await pool.query('SELECT * FROM ventas WHERE id = $1', [id]);
-    if (venta.rows.length === 0) {
+    const ventaResultado = await pool.query('SELECT * FROM ventas WHERE id = $1', [id]);
+    if (ventaResultado.rows.length === 0) {
       return res.status(404).json({ message: 'Venta no encontrada' });
     }
+    const venta = ventaResultado.rows[0];
 
     const detalles = await pool.query(
       `SELECT dv.*, p.nombre, p.codigo
@@ -226,7 +262,20 @@ async function obtenerVentaPorId(req, res) {
       [id]
     );
 
-    res.json({ venta: venta.rows[0], detalles: detalles.rows, pagos: pagos.rows });
+    let cliente = null;
+    let fiado = null;
+    if (venta.cliente_id) {
+      const clienteResultado = await pool.query('SELECT id, nombre, telefono FROM clientes WHERE id = $1', [venta.cliente_id]);
+      cliente = clienteResultado.rows[0] || null;
+
+      const cargoResultado = await pool.query(
+        `SELECT * FROM movimientos_cuenta WHERE venta_id = $1 AND tipo = 'cargo'`,
+        [id]
+      );
+      fiado = cargoResultado.rows[0] || null;
+    }
+
+    res.json({ venta, detalles: detalles.rows, pagos: pagos.rows, cliente, fiado });
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener venta', error: error.message });
   }
