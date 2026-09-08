@@ -10,6 +10,7 @@ const tasasRoutes = require('./modules/tasas/tasas.routes');
 const reportesRoutes = require('./modules/reportes/reportes.routes');
 const metodosPagoRoutes = require('./modules/metodos-pago/metodos-pago.routes');
 const cajaRoutes = require('./modules/caja/caja.routes');
+const clientesRoutes = require('./modules/clientes/clientes.routes');
 
 
 const iniciarCronTasas = require('./utils/cronTasas');
@@ -37,6 +38,7 @@ app.use('/api/productos', productosRoutes);
 app.use('/api/ventas', ventasRoutes);
 app.use('/api/reportes', reportesRoutes);
 app.use('/api/caja', cajaRoutes);
+app.use('/api/clientes', clientesRoutes);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
