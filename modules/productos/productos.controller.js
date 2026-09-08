@@ -2,7 +2,6 @@ const pool = require('../../config/db');
 const generarCodigoProducto = require('../../utils/generarCodigo');
 const { calcularPreciosYGanancia } = require('../../utils/calculoGanancia');
 
-// Listar productos activos
 async function listarProductos(req, res) {
   try {
     const resultado = await pool.query(
@@ -14,7 +13,6 @@ async function listarProductos(req, res) {
   }
 }
 
-// Obtener un producto por código de barras (para el escáner en el punto de venta)
 async function obtenerPorCodigo(req, res) {
   const { codigo } = req.params;
   try {
@@ -31,11 +29,22 @@ async function obtenerPorCodigo(req, res) {
   }
 }
 
-// Crear producto
+async function listarCategorias(req, res) {
+  try {
+    const resultado = await pool.query(
+      `SELECT DISTINCT categoria FROM productos WHERE categoria IS NOT NULL AND activo = true ORDER BY categoria ASC`
+    );
+    res.json(resultado.rows.map((r) => r.categoria));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al listar categorías', error: error.message });
+  }
+}
+
 async function crearProducto(req, res) {
   const {
     codigo, nombre, descripcion, precio_compra, precio_venta,
-    porcentaje_ganancia, moneda_base, categoria, stock, imagen_url
+    porcentaje_ganancia, moneda_base, categoria, stock, imagen_url,
+    precio_manual_usd, precio_manual_cop, precio_manual_ves
   } = req.body;
 
   if (!nombre || precio_compra == null || !moneda_base) {
@@ -46,7 +55,6 @@ async function crearProducto(req, res) {
     return res.status(400).json({ message: 'Moneda base inválida' });
   }
 
-  // Si no viene ni porcentaje ni precio_venta, es un error de datos
   if (porcentaje_ganancia == null && precio_venta == null) {
     return res.status(400).json({ message: 'Debes indicar el precio de venta o un porcentaje de ganancia' });
   }
@@ -64,10 +72,18 @@ async function crearProducto(req, res) {
     }
 
     const resultado = await pool.query(
-      `INSERT INTO productos (codigo, nombre, descripcion, precio_compra, precio_venta, porcentaje_ganancia, moneda_base, categoria, stock, imagen_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO productos (
+        codigo, nombre, descripcion, precio_compra, precio_venta, porcentaje_ganancia,
+        moneda_base, categoria, stock, imagen_url,
+        precio_manual_usd, precio_manual_cop, precio_manual_ves
+      )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
-      [codigoFinal, nombre, descripcion || null, precio_compra, ventaFinal, porcentajeFinal, moneda_base, categoria || null, stock || 0, imagen_url || null]
+      [
+        codigoFinal, nombre, descripcion || null, precio_compra, ventaFinal, porcentajeFinal,
+        moneda_base, categoria || null, stock || 0, imagen_url || null,
+        precio_manual_usd || null, precio_manual_cop || null, precio_manual_ves || null
+      ]
     );
 
     res.status(201).json(resultado.rows[0]);
@@ -76,16 +92,15 @@ async function crearProducto(req, res) {
   }
 }
 
-// Editar producto (reemplaza la función anterior)
 async function editarProducto(req, res) {
   const { id } = req.params;
   const {
     nombre, descripcion, precio_compra, precio_venta,
-    porcentaje_ganancia, moneda_base, categoria, imagen_url
+    porcentaje_ganancia, moneda_base, categoria, imagen_url,
+    precio_manual_usd, precio_manual_cop, precio_manual_ves
   } = req.body;
 
   try {
-    // Traemos el producto actual para tener los valores base si solo mandan uno de los precios
     const actualResultado = await pool.query('SELECT * FROM productos WHERE id = $1', [id]);
     if (actualResultado.rows.length === 0) {
       return res.status(404).json({ message: 'Producto no encontrado' });
@@ -97,7 +112,6 @@ async function editarProducto(req, res) {
     let ventaFinal = actual.precio_venta;
     let porcentajeFinal = actual.porcentaje_ganancia;
 
-    // Solo recalculamos si mandaron algo relacionado a precios/porcentaje
     if (precio_compra != null || precio_venta != null || porcentaje_ganancia != null) {
       const calculado = calcularPreciosYGanancia({
         precio_compra: compraFinal,
@@ -107,6 +121,11 @@ async function editarProducto(req, res) {
       ventaFinal = calculado.precio_venta;
       porcentajeFinal = calculado.porcentaje_ganancia;
     }
+
+    // Los precios manuales se actualizan tal cual vengan (incluyendo null explícito, para poder "quitar" un precio fijo)
+    const manualUsdFinal = precio_manual_usd !== undefined ? (precio_manual_usd === '' ? null : precio_manual_usd) : actual.precio_manual_usd;
+    const manualCopFinal = precio_manual_cop !== undefined ? (precio_manual_cop === '' ? null : precio_manual_cop) : actual.precio_manual_cop;
+    const manualVesFinal = precio_manual_ves !== undefined ? (precio_manual_ves === '' ? null : precio_manual_ves) : actual.precio_manual_ves;
 
     const resultado = await pool.query(
       `UPDATE productos SET
@@ -118,10 +137,13 @@ async function editarProducto(req, res) {
         moneda_base = COALESCE($6, moneda_base),
         categoria = COALESCE($7, categoria),
         imagen_url = COALESCE($8, imagen_url),
+        precio_manual_usd = $9,
+        precio_manual_cop = $10,
+        precio_manual_ves = $11,
         updated_at = NOW()
-       WHERE id = $9
+       WHERE id = $12
        RETURNING *`,
-      [nombre, descripcion, compraFinal, ventaFinal, porcentajeFinal, moneda_base, categoria, imagen_url, id]
+      [nombre, descripcion, compraFinal, ventaFinal, porcentajeFinal, moneda_base, categoria, imagen_url, manualUsdFinal, manualCopFinal, manualVesFinal, id]
     );
 
     res.json(resultado.rows[0]);
@@ -130,7 +152,6 @@ async function editarProducto(req, res) {
   }
 }
 
-// Desactivar producto (borrado lógico, nunca DELETE real por el historial de ventas)
 async function desactivarProducto(req, res) {
   const { id } = req.params;
   try {
@@ -147,10 +168,9 @@ async function desactivarProducto(req, res) {
   }
 }
 
-// Ajuste manual de stock (ej. entrada de nueva mercancía, no relacionado a una venta)
 async function ajustarStock(req, res) {
   const { id } = req.params;
-  const { cantidad } = req.body; // puede ser positivo (entrada) o negativo (ajuste/merma)
+  const { cantidad } = req.body;
 
   if (cantidad == null) {
     return res.status(400).json({ message: 'Cantidad es requerida' });
@@ -174,12 +194,10 @@ async function ajustarStock(req, res) {
   }
 }
 
-// Subir imagen de un producto (devuelve la URL para guardarla en el producto)
 async function subirImagenProducto(req, res) {
   if (!req.file) {
     return res.status(400).json({ message: 'No se recibió ninguna imagen' });
   }
-
   try {
     res.json({ imagen_url: req.file.path });
   } catch (error) {
@@ -187,24 +205,13 @@ async function subirImagenProducto(req, res) {
   }
 }
 
-async function listarCategorias(req, res) {
-  try {
-    const resultado = await pool.query(
-      `SELECT DISTINCT categoria FROM productos WHERE categoria IS NOT NULL AND activo = true ORDER BY categoria ASC`
-    );
-    res.json(resultado.rows.map((r) => r.categoria));
-  } catch (error) {
-    res.status(500).json({ message: 'Error al listar categorías', error: error.message });
-  }
-}
-
 module.exports = {
   listarProductos,
   obtenerPorCodigo,
+  listarCategorias,
   crearProducto,
   editarProducto,
   desactivarProducto,
   ajustarStock,
-  subirImagenProducto,
-  listarCategorias
+  subirImagenProducto
 };

@@ -1,5 +1,5 @@
-const pool = require("../../config/db");
-const { convertirAUSD } = require("../../utils/conversionMoneda");
+const pool = require('../../config/db');
+const { convertirAUSD } = require('../../utils/conversionMoneda');
 
 function generarNumeroVenta() {
   const timestamp = Date.now().toString().slice(-10);
@@ -8,35 +8,29 @@ function generarNumeroVenta() {
 
 async function obtenerTasaVigente(client) {
   const resultado = await client.query(
-    "SELECT * FROM tasas_cambio ORDER BY fecha DESC, created_at DESC LIMIT 1",
+    'SELECT * FROM tasas_cambio ORDER BY fecha DESC, created_at DESC LIMIT 1'
   );
   if (resultado.rows.length === 0) {
-    throw new Error(
-      "No hay una tasa de cambio registrada. Registra una tasa antes de vender.",
-    );
+    throw new Error('No hay una tasa de cambio registrada. Registra una tasa antes de vender.');
   }
   return resultado.rows[0];
 }
 
 async function crearVenta(req, res) {
-  const { productos, pagos } = req.body;
+  const { productos, pagos, cliente_id, sesion_caja_id, moneda_venta } = req.body;
   const usuario_id = req.usuario.id;
 
   if (!productos || productos.length === 0) {
-    return res
-      .status(400)
-      .json({ message: "Debe incluir al menos un producto" });
+    return res.status(400).json({ message: 'Debe incluir al menos un producto' });
   }
   if (!pagos || pagos.length === 0) {
-    return res
-      .status(400)
-      .json({ message: "Debe incluir al menos un método de pago" });
+    return res.status(400).json({ message: 'Debe incluir al menos un método de pago' });
   }
 
   const client = await pool.connect();
 
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     const tasa = await obtenerTasaVigente(client);
     let totalUSD = 0;
@@ -44,8 +38,8 @@ async function crearVenta(req, res) {
 
     for (const item of productos) {
       const resultadoProducto = await client.query(
-        "SELECT * FROM productos WHERE id = $1 AND activo = true FOR UPDATE",
-        [item.producto_id],
+        'SELECT * FROM productos WHERE id = $1 AND activo = true FOR UPDATE',
+        [item.producto_id]
       );
 
       if (resultadoProducto.rows.length === 0) {
@@ -55,108 +49,121 @@ async function crearVenta(req, res) {
       const producto = resultadoProducto.rows[0];
 
       if (producto.stock < item.cantidad) {
-        throw new Error(
-          `Stock insuficiente para "${producto.nombre}" (disponible: ${producto.stock})`,
-        );
+        throw new Error(`Stock insuficiente para "${producto.nombre}" (disponible: ${producto.stock})`);
       }
 
-      const precioUnitarioUSD = convertirAUSD(producto.precio_venta, producto.moneda_base, tasa);
-const subtotalUSD = precioUnitarioUSD * item.cantidad;
-totalUSD += subtotalUSD;
+      // Determina el precio exacto a usar: precio fijo manual (si aplica a la moneda de venta) o conversión normal
+      let precioUnitarioUSD;
+      let precioUnitarioOriginal;
+      let monedaOriginal;
 
-const precioUnitarioOriginal = Number(producto.precio_venta);
-const subtotalOriginal = precioUnitarioOriginal * item.cantidad;
+      if (moneda_venta && moneda_venta !== producto.moneda_base) {
+        const campoManual = `precio_manual_${moneda_venta.toLowerCase()}`;
+        if (producto[campoManual] != null) {
+          precioUnitarioOriginal = Number(producto[campoManual]);
+          monedaOriginal = moneda_venta;
+          precioUnitarioUSD = convertirAUSD(precioUnitarioOriginal, moneda_venta, tasa);
+        }
+      }
 
-detalles.push({
-  producto_id: producto.id,
-  cantidad: item.cantidad,
-  precio_unitario_usd: precioUnitarioUSD,
-  subtotal_usd: subtotalUSD,
-  precio_unitario_original: precioUnitarioOriginal,
-  subtotal_original: subtotalOriginal,
-  moneda_original: producto.moneda_base
-});
+      if (precioUnitarioUSD === undefined) {
+        precioUnitarioUSD = convertirAUSD(producto.precio_venta, producto.moneda_base, tasa);
+        precioUnitarioOriginal = Number(producto.precio_venta);
+        monedaOriginal = producto.moneda_base;
+      }
 
-      await client.query(
-        "UPDATE productos SET stock = stock - $1 WHERE id = $2",
-        [item.cantidad, producto.id],
-      );
+      const subtotalUSD = precioUnitarioUSD * item.cantidad;
+      totalUSD += subtotalUSD;
+      const subtotalOriginal = precioUnitarioOriginal * item.cantidad;
+
+      detalles.push({
+        producto_id: producto.id,
+        cantidad: item.cantidad,
+        precio_unitario_usd: precioUnitarioUSD,
+        subtotal_usd: subtotalUSD,
+        precio_unitario_original: precioUnitarioOriginal,
+        subtotal_original: subtotalOriginal,
+        moneda_original: monedaOriginal
+      });
+
+      await client.query('UPDATE productos SET stock = stock - $1 WHERE id = $2', [
+        item.cantidad,
+        producto.id
+      ]);
     }
 
-    // Validar cada método de pago existe
     let totalPagadoUSD = 0;
     const pagosCalculados = [];
 
     for (const pago of pagos) {
       const metodoResultado = await client.query(
-        "SELECT id, nombre FROM metodos_pago WHERE id = $1 AND activo = true",
-        [pago.metodo_pago_id],
+        'SELECT id, nombre FROM metodos_pago WHERE id = $1 AND activo = true',
+        [pago.metodo_pago_id]
       );
       if (metodoResultado.rows.length === 0) {
-        throw new Error("Método de pago inválido");
+        throw new Error('Método de pago inválido');
       }
 
       const montoEquivalenteUSD = convertirAUSD(pago.monto, pago.moneda, tasa);
       totalPagadoUSD += montoEquivalenteUSD;
-      pagosCalculados.push({
-        ...pago,
-        monto_equivalente_usd: montoEquivalenteUSD,
-      });
+      pagosCalculados.push({ ...pago, monto_equivalente_usd: montoEquivalenteUSD });
     }
 
-    // Solo rechazamos si pagaron DE MENOS. Pagar de más está permitido (se da vuelto).
+    // Si falta dinero por cubrir, solo se permite si hay un cliente asignado (fiado)
     const faltante = totalUSD - totalPagadoUSD;
-    if (faltante > 0.05) {
+    if (faltante > 0.05 && !cliente_id) {
       throw new Error(
-        `El monto pagado (${totalPagadoUSD.toFixed(2)} USD) es menor al total de la venta (${totalUSD.toFixed(2)} USD)`,
+        `El monto pagado (${totalPagadoUSD.toFixed(2)} USD) es menor al total de la venta (${totalUSD.toFixed(2)} USD)`
       );
     }
 
     const numeroVenta = generarNumeroVenta();
     const ventaResultado = await client.query(
-      `INSERT INTO ventas (numero_venta, usuario_id, total_usd, tasa_id, estado)
-       VALUES ($1, $2, $3, $4, 'completada')
+      `INSERT INTO ventas (numero_venta, usuario_id, total_usd, tasa_id, estado, cliente_id, sesion_caja_id)
+       VALUES ($1, $2, $3, $4, 'completada', $5, $6)
        RETURNING *`,
-      [numeroVenta, usuario_id, totalUSD, tasa.id],
+      [numeroVenta, usuario_id, totalUSD, tasa.id, cliente_id || null, sesion_caja_id || null]
     );
     const venta = ventaResultado.rows[0];
 
     for (const detalle of detalles) {
       await client.query(
-  `INSERT INTO detalle_venta (venta_id, producto_id, cantidad, precio_unitario_usd, subtotal_usd, precio_unitario_original, subtotal_original, moneda_original)
-   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-  [
-    venta.id, detalle.producto_id, detalle.cantidad, detalle.precio_unitario_usd, detalle.subtotal_usd,
-    detalle.precio_unitario_original, detalle.subtotal_original, detalle.moneda_original
-  ]
-);
+        `INSERT INTO detalle_venta (venta_id, producto_id, cantidad, precio_unitario_usd, subtotal_usd, precio_unitario_original, subtotal_original, moneda_original)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          venta.id, detalle.producto_id, detalle.cantidad, detalle.precio_unitario_usd, detalle.subtotal_usd,
+          detalle.precio_unitario_original, detalle.subtotal_original, detalle.moneda_original
+        ]
+      );
     }
 
     for (const pago of pagosCalculados) {
       await client.query(
         `INSERT INTO pagos_venta (venta_id, moneda, metodo_pago_id, monto, monto_equivalente_usd, referencia)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          venta.id,
-          pago.moneda,
-          pago.metodo_pago_id,
-          pago.monto,
-          pago.monto_equivalente_usd,
-          pago.referencia || null,
-        ],
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [venta.id, pago.moneda, pago.metodo_pago_id, pago.monto, pago.monto_equivalente_usd, pago.referencia || null]
       );
     }
 
-    await client.query("COMMIT");
+    // Si quedó saldo sin cubrir y hay cliente, se registra como cargo (fiado)
+    if (faltante > 0.05 && cliente_id) {
+      await client.query(
+        `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, venta_id, sesion_caja_id, usuario_id)
+         VALUES ($1, 'cargo', 'USD', $2, $2, $3, $4, $5)`,
+        [cliente_id, faltante, venta.id, sesion_caja_id || null, usuario_id]
+      );
+    }
+
+    await client.query('COMMIT');
 
     res.status(201).json({
       venta,
       detalles,
       pagos: pagosCalculados,
-      vuelto_usd: Math.max(0, totalPagadoUSD - totalUSD),
+      vuelto_usd: Math.max(0, totalPagadoUSD - totalUSD)
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query('ROLLBACK');
     res.status(400).json({ message: error.message });
   } finally {
     client.release();
@@ -185,10 +192,7 @@ async function listarVentas(req, res) {
       params.push(desde, hasta);
     }
 
-    query += `
-      GROUP BY v.id, u.nombre
-      ORDER BY v.fecha DESC
-    `;
+    query += ` GROUP BY v.id, u.nombre ORDER BY v.fecha DESC`;
 
     const resultado = await pool.query(query, params);
     res.json(resultado.rows);
@@ -201,9 +205,9 @@ async function obtenerVentaPorId(req, res) {
   const { id } = req.params;
 
   try {
-    const venta = await pool.query("SELECT * FROM ventas WHERE id = $1", [id]);
+    const venta = await pool.query('SELECT * FROM ventas WHERE id = $1', [id]);
     if (venta.rows.length === 0) {
-      return res.status(404).json({ message: "Venta no encontrada" });
+      return res.status(404).json({ message: 'Venta no encontrada' });
     }
 
     const detalles = await pool.query(
@@ -211,7 +215,7 @@ async function obtenerVentaPorId(req, res) {
        FROM detalle_venta dv
        JOIN productos p ON p.id = dv.producto_id
        WHERE dv.venta_id = $1`,
-      [id],
+      [id]
     );
 
     const pagos = await pool.query(
@@ -219,18 +223,12 @@ async function obtenerVentaPorId(req, res) {
        FROM pagos_venta pv
        JOIN metodos_pago mp ON mp.id = pv.metodo_pago_id
        WHERE pv.venta_id = $1`,
-      [id],
+      [id]
     );
 
-    res.json({
-      venta: venta.rows[0],
-      detalles: detalles.rows,
-      pagos: pagos.rows,
-    });
+    res.json({ venta: venta.rows[0], detalles: detalles.rows, pagos: pagos.rows });
   } catch (error) {
-    res
-      .status(500)
-      .json({ message: "Error al obtener venta", error: error.message });
+    res.status(500).json({ message: 'Error al obtener venta', error: error.message });
   }
 }
 
