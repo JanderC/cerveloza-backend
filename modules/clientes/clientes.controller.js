@@ -6,7 +6,12 @@ async function listarClientesConSaldo(req, res) {
   try {
     const resultado = await pool.query(`
       SELECT c.id, c.nombre, c.telefono, c.identificacion,
-             COALESCE(SUM(CASE WHEN mc.tipo = 'cargo' THEN mc.monto_usd ELSE -mc.monto_usd END), 0) AS saldo_usd
+             COALESCE(SUM(CASE WHEN mc.tipo = 'cargo' THEN mc.monto_usd ELSE -mc.monto_usd END), 0) AS saldo_usd,
+             (
+               SELECT moneda_original FROM movimientos_cuenta
+               WHERE cliente_id = c.id AND tipo = 'cargo' AND saldo_pendiente_usd > 0.01
+               ORDER BY fecha DESC LIMIT 1
+             ) AS moneda_reciente
       FROM clientes c
       LEFT JOIN movimientos_cuenta mc ON mc.cliente_id = c.id
       WHERE c.activo = true

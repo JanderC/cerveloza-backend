@@ -176,12 +176,15 @@ async function crearVenta(req, res) {
 
     // Si quedó saldo sin cubrir, se registra el cargo con su propio saldo pendiente rastreable
     if (esFiado) {
-      await client.query(
-        `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, saldo_pendiente_usd, venta_id, sesion_caja_id, usuario_id)
-         VALUES ($1, 'cargo', 'USD', $2, $2, $2, $3, $4, $5)`,
-        [cliente_id, restanteUSD, venta.id, sesion_caja_id || null, usuario_id]
-      );
-    }
+  const monedaFiado = moneda_venta || 'USD';
+  const montoOriginalFiado = convertirDesdeUSD(restanteUSD, monedaFiado, tasa);
+
+  await client.query(
+    `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, saldo_pendiente_usd, venta_id, sesion_caja_id, usuario_id, moneda_original, monto_original)
+     VALUES ($1, 'cargo', 'USD', $2, $2, $2, $3, $4, $5, $6, $7)`,
+    [cliente_id, restanteUSD, venta.id, sesion_caja_id || null, usuario_id, monedaFiado, montoOriginalFiado]
+  );
+}
 
     await client.query('COMMIT');
 
