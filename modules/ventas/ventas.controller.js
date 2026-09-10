@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { convertirAUSD, precioEfectivoEnMoneda, redondear } = require('../../utils/conversionMoneda');
+const { convertirAUSD, precioEfectivoEnMoneda, redondear, convertirDesdeUSD } = require('../../utils/conversionMoneda');
 
 function generarNumeroVenta() {
   const timestamp = Date.now().toString().slice(-10);
