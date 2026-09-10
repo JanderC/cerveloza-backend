@@ -96,6 +96,17 @@ async function resumenSesion(req, res) {
       [id]
     );
 
+    const pagosPorMetodo = await pool.query(
+  `SELECT mp.nombre AS metodo, pv.moneda, SUM(pv.monto) AS total
+   FROM pagos_venta pv
+   JOIN ventas v ON v.id = pv.venta_id
+   JOIN metodos_pago mp ON mp.id = pv.metodo_pago_id
+   WHERE v.sesion_caja_id = $1 AND v.estado = 'completada'
+   GROUP BY mp.nombre, pv.moneda
+   ORDER BY pv.moneda, mp.nombre`,
+  [id]
+);
+
     // Ingresos y egresos manuales, por moneda
     const movimientos = await pool.query(
       `SELECT tipo, moneda, SUM(monto) AS total
@@ -124,12 +135,13 @@ async function resumenSesion(req, res) {
     );
 
     res.json({
-      sesion,
-      ventas_efectivo: ventasEfectivo.rows,
-      movimientos: movimientos.rows,
-      abonos_efectivo: abonosEfectivo.rows,
-      fiado_otorgado_usd: fiadoOtorgado.rows[0].total_usd
-    });
+  sesion,
+  ventas_efectivo: ventasEfectivo.rows,
+  movimientos: movimientos.rows,
+  abonos_efectivo: abonosEfectivo.rows,
+  fiado_otorgado_usd: fiadoOtorgado.rows[0].total_usd,
+  pagos_por_metodo: pagosPorMetodo.rows
+});
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener resumen', error: error.message });
   }

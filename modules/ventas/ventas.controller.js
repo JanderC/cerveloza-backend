@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { convertirAUSD, convertirDesdeUSD } = require('../../utils/conversionMoneda');
+const { convertirAUSD, precioEfectivoEnMoneda, redondear } = require('../../utils/conversionMoneda');
 
 function generarNumeroVenta() {
   const timestamp = Date.now().toString().slice(-10);
@@ -23,9 +23,12 @@ async function crearVenta(req, res) {
   if (!productos || productos.length === 0) {
     return res.status(400).json({ message: 'Debe incluir al menos un producto' });
   }
-  if (!pagos || pagos.length === 0) {
-    return res.status(400).json({ message: 'Debe incluir al menos un método de pago' });
-  }
+ if (!pagos) {
+  return res.status(400).json({ message: 'Debe incluir información de pago' });
+}
+if (pagos.length === 0 && !cliente_id) {
+  return res.status(400).json({ message: 'Debe incluir al menos un método de pago, o asignar un cliente para fiar completo' });
+}
 
   const client = await pool.connect();
 
@@ -52,24 +55,10 @@ async function crearVenta(req, res) {
         throw new Error(`Stock insuficiente para "${producto.nombre}" (disponible: ${producto.stock})`);
       }
 
-      let precioUnitarioUSD;
-      let precioUnitarioOriginal;
-      let monedaOriginal;
-
-      if (moneda_venta && moneda_venta !== producto.moneda_base) {
-        const campoManual = `precio_manual_${moneda_venta.toLowerCase()}`;
-        if (producto[campoManual] != null) {
-          precioUnitarioOriginal = Number(producto[campoManual]);
-          monedaOriginal = moneda_venta;
-          precioUnitarioUSD = convertirAUSD(precioUnitarioOriginal, moneda_venta, tasa);
-        }
-      }
-
-      if (precioUnitarioUSD === undefined) {
-        precioUnitarioUSD = convertirAUSD(producto.precio_venta, producto.moneda_base, tasa);
-        precioUnitarioOriginal = Number(producto.precio_venta);
-        monedaOriginal = producto.moneda_base;
-      }
+      const monedaEfectiva = moneda_venta || producto.moneda_base;
+      const precioUnitarioOriginal = redondear(precioEfectivoEnMoneda(producto, monedaEfectiva, tasa), 4);
+      const monedaOriginal = monedaEfectiva;
+      const precioUnitarioUSD = convertirAUSD(precioUnitarioOriginal, monedaEfectiva, tasa);
 
       const subtotalUSD = precioUnitarioUSD * item.cantidad;
       totalUSD += subtotalUSD;
@@ -177,12 +166,13 @@ async function crearVenta(req, res) {
     // Si quedó saldo sin cubrir, se registra el cargo con su propio saldo pendiente rastreable
     if (esFiado) {
   const monedaFiado = moneda_venta || 'USD';
-  const montoOriginalFiado = convertirDesdeUSD(restanteUSD, monedaFiado, tasa);
+  const restanteRedondeadoUSD = redondear(restanteUSD, 6);
+  const montoOriginalFiado = redondear(convertirDesdeUSD(restanteRedondeadoUSD, monedaFiado, tasa), 2);
 
   await client.query(
     `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, saldo_pendiente_usd, venta_id, sesion_caja_id, usuario_id, moneda_original, monto_original)
      VALUES ($1, 'cargo', 'USD', $2, $2, $2, $3, $4, $5, $6, $7)`,
-    [cliente_id, restanteUSD, venta.id, sesion_caja_id || null, usuario_id, monedaFiado, montoOriginalFiado]
+    [cliente_id, restanteRedondeadoUSD, venta.id, sesion_caja_id || null, usuario_id, monedaFiado, montoOriginalFiado]
   );
 }
 
