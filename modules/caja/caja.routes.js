@@ -7,7 +7,8 @@ const {
   registrarMovimiento,
   resumenSesion,
   cerrarCaja,
-  listarHistorialSesiones
+  listarHistorialSesiones,
+  movimientosDelDia
 } = require('./caja.controller');
 
 router.get('/abierta', verificarToken, obtenerSesionAbierta);
@@ -16,5 +17,6 @@ router.post('/movimiento', verificarToken, registrarMovimiento);
 router.get('/:id/resumen', verificarToken, resumenSesion);
 router.post('/:id/cerrar', verificarToken, cerrarCaja);
 router.get('/historial', verificarToken, listarHistorialSesiones);
+router.get('/:id/movimientos-dia', verificarToken, movimientosDelDia);
 
 module.exports = router;

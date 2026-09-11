@@ -244,11 +244,55 @@ async function listarHistorialSesiones(req, res) {
   }
 }
 
+async function movimientosDelDia(req, res) {
+  const { id } = req.params;
+  try {
+    const ventas = await pool.query(
+      `SELECT v.id, v.numero_venta, v.fecha, v.estado, u.nombre AS usuario,
+              COALESCE(SUM(CASE WHEN pv.moneda='USD' THEN pv.monto END),0) AS usd,
+              COALESCE(SUM(CASE WHEN pv.moneda='COP' THEN pv.monto END),0) AS cop,
+              COALESCE(SUM(CASE WHEN pv.moneda='VES' THEN pv.monto END),0) AS ves
+       FROM ventas v
+       JOIN usuarios u ON u.id = v.usuario_id
+       LEFT JOIN pagos_venta pv ON pv.venta_id = v.id
+       WHERE v.sesion_caja_id = $1 AND v.estado = 'completada'
+       GROUP BY v.id, u.nombre`,
+      [id]
+    );
+
+    const movimientos = await pool.query(
+      `SELECT id, tipo, concepto, moneda, monto, fecha FROM movimientos_caja WHERE sesion_caja_id = $1`,
+      [id]
+    );
+
+    const abonos = await pool.query(
+      `SELECT mc.id, mc.moneda, mc.monto, mc.fecha, c.nombre AS cliente, mp.nombre AS metodo
+       FROM movimientos_cuenta mc
+       JOIN clientes c ON c.id = mc.cliente_id
+       LEFT JOIN metodos_pago mp ON mp.id = mc.metodo_pago_id
+       WHERE mc.sesion_caja_id = $1 AND mc.tipo = 'abono'`,
+      [id]
+    );
+
+    const eventos = [
+      ...ventas.rows.map((v) => ({ tipo: 'venta', fecha: v.fecha, detalle: `Venta ${v.numero_venta} · ${v.usuario}`, usd: Number(v.usd), cop: Number(v.cop), ves: Number(v.ves) })),
+      ...movimientos.rows.map((m) => ({ tipo: m.tipo, fecha: m.fecha, detalle: m.concepto, moneda: m.moneda, monto: Number(m.monto) })),
+      ...abonos.rows.map((a) => ({ tipo: 'abono', fecha: a.fecha, detalle: `Abono de ${a.cliente} (${a.metodo})`, moneda: a.moneda, monto: Number(a.monto) }))
+    ].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+    res.json(eventos);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener movimientos del día', error: error.message });
+  }
+}
+
+
 module.exports = {
   obtenerSesionAbierta,
   abrirCaja,
   registrarMovimiento,
   resumenSesion,
   cerrarCaja,
-  listarHistorialSesiones
+  listarHistorialSesiones,
+  movimientosDelDia
 };

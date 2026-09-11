@@ -12,14 +12,16 @@ const metodosPagoRoutes = require('./modules/metodos-pago/metodos-pago.routes');
 const cajaRoutes = require('./modules/caja/caja.routes');
 const clientesRoutes = require('./modules/clientes/clientes.routes');
 const colaboracionesRoutes = require('./modules/colaboraciones/colaboraciones.routes');
-
-
+const iniciarCronCaja = require('./utils/cronCaja');
 const iniciarCronTasas = require('./utils/cronTasas');
+
+
 const app = express();
 
 
 iniciarCronTasas();
-app.use(cors());
+iniciarCronCaja();
+app.use(cors()); 
 app.use(express.json());
 
 // Ruta de prueba para verificar que el servidor y la DB responden
