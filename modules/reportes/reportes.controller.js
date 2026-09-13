@@ -129,7 +129,8 @@ async function resumenDashboard(req, res) {
     const hoy = await pool.query(`
       SELECT COALESCE(SUM(total_usd), 0) AS total_usd, COUNT(*) AS cantidad
       FROM ventas
-      WHERE estado = 'completada' AND DATE(fecha) = CURRENT_DATE
+      WHERE estado = 'completada'
+        AND (fecha AT TIME ZONE 'America/Caracas')::date = (NOW() AT TIME ZONE 'America/Caracas')::date
     `);
 
     const hoyPorMoneda = await pool.query(`
@@ -139,13 +140,15 @@ async function resumenDashboard(req, res) {
         COALESCE(SUM(CASE WHEN pv.moneda = 'VES' THEN pv.monto END), 0) AS monto_ves
       FROM pagos_venta pv
       JOIN ventas v ON v.id = pv.venta_id
-      WHERE v.estado = 'completada' AND DATE(v.fecha) = CURRENT_DATE
+      WHERE v.estado = 'completada'
+        AND (v.fecha AT TIME ZONE 'America/Caracas')::date = (NOW() AT TIME ZONE 'America/Caracas')::date
     `);
 
     const mes = await pool.query(`
       SELECT COALESCE(SUM(total_usd), 0) AS total_usd, COUNT(*) AS cantidad
       FROM ventas
-      WHERE estado = 'completada' AND DATE_TRUNC('month', fecha) = DATE_TRUNC('month', CURRENT_DATE)
+      WHERE estado = 'completada'
+        AND DATE_TRUNC('month', fecha AT TIME ZONE 'America/Caracas') = DATE_TRUNC('month', NOW() AT TIME ZONE 'America/Caracas')
     `);
 
     const stockBajo = await pool.query(`
@@ -157,7 +160,8 @@ async function resumenDashboard(req, res) {
       FROM detalle_venta dv
       JOIN productos p ON p.id = dv.producto_id
       JOIN ventas v ON v.id = dv.venta_id
-      WHERE v.estado = 'completada' AND DATE(v.fecha) = CURRENT_DATE
+      WHERE v.estado = 'completada'
+        AND (v.fecha AT TIME ZONE 'America/Caracas')::date = (NOW() AT TIME ZONE 'America/Caracas')::date
       GROUP BY p.id, p.nombre, p.imagen_url
       ORDER BY cantidad_total DESC
       LIMIT 1
