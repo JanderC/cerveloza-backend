@@ -12,16 +12,17 @@ const metodosPagoRoutes = require('./modules/metodos-pago/metodos-pago.routes');
 const cajaRoutes = require('./modules/caja/caja.routes');
 const clientesRoutes = require('./modules/clientes/clientes.routes');
 const colaboracionesRoutes = require('./modules/colaboraciones/colaboraciones.routes');
-const iniciarCronCaja = require('./utils/cronCaja');
 const iniciarCronTasas = require('./utils/cronTasas');
 
+// NOTA: el cron de cierre automático de caja a medianoche fue eliminado.
+// Las cajas y los bloques ahora los cierra el usuario cuando lo decide, y solo
+// entonces se hace el conteo físico real y el depósito al módulo Financiero.
 
 const app = express();
 
-
 iniciarCronTasas();
-iniciarCronCaja();
-app.use(cors()); 
+
+app.use(cors());
 app.use(express.json());
 
 // Ruta de prueba para verificar que el servidor y la DB responden
@@ -33,6 +34,7 @@ app.get('/api/health', async (req, res) => {
     res.status(500).json({ status: 'error', message: error.message });
   }
 });
+
 app.use('/api/metodos-pago', metodosPagoRoutes);
 app.use('/api/tasas', tasasRoutes);
 app.use('/api/auth', authRoutes);
