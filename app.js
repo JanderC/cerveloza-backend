@@ -43,6 +43,8 @@ app.use('/api/reportes', reportesRoutes);
 app.use('/api/caja', cajaRoutes);
 app.use('/api/clientes', clientesRoutes);
 app.use('/api/colaboraciones', colaboracionesRoutes);
+app.use('/api/financiero', require('./modules/financiero/financiero.routes'));
+app.use('/api/bloques', require('./modules/bloques/bloques.routes'));
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {

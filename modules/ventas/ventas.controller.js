@@ -1,5 +1,6 @@
 const pool = require('../../config/db');
 const { convertirAUSD, convertirEntreMonedas, precioEfectivoEnMoneda, redondear } = require('../../utils/conversionMoneda');
+const { obtenerOCrearBloqueAbierto } = require('../bloques/bloques.controller');
 
 function generarNumeroVenta() {
   const timestamp = Date.now().toString().slice(-10);
@@ -37,6 +38,10 @@ async function crearVenta(req, res) {
 
     const tasa = await obtenerTasaVigente(client);
     const monedaEfectiva = moneda_venta || 'USD';
+
+    // Toda venta entra al bloque abierto, sin importar la fecha.
+    // Si no hay ninguno, se abre uno solo para no frenar la venta.
+    const bloque = await obtenerOCrearBloqueAbierto(client, usuario_id);
 
     // ===== Precios y total: TODO se calcula directo en la moneda de venta, sin pasar por dólares =====
     const detalles = [];
@@ -147,10 +152,10 @@ async function crearVenta(req, res) {
 
     const numeroVenta = generarNumeroVenta();
     const ventaResultado = await client.query(
-      `INSERT INTO ventas (numero_venta, usuario_id, total_usd, tasa_id, estado, cliente_id, sesion_caja_id, vuelto_moneda, vuelto_monto)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO ventas (numero_venta, usuario_id, total_usd, tasa_id, estado, cliente_id, sesion_caja_id, bloque_id, vuelto_moneda, vuelto_monto)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [numeroVenta, usuario_id, totalUSD, tasa.id, estadoVenta, cliente_id || null, sesion_caja_id || null, vueltoMonedaFinal, vueltoMontoFinal]
+      [numeroVenta, usuario_id, totalUSD, tasa.id, estadoVenta, cliente_id || null, sesion_caja_id || null, bloque.id, vueltoMonedaFinal, vueltoMontoFinal]
     );
     const venta = ventaResultado.rows[0];
 
@@ -187,6 +192,7 @@ async function crearVenta(req, res) {
 
     res.status(201).json({
       venta,
+      bloque: { id: bloque.id, numero: bloque.numero, nombre: bloque.nombre },
       detalles,
       pagos: pagosCalculados,
       vuelto_usd: convertirAUSD(excedenteEnMonedaVenta, monedaEfectiva, tasa),

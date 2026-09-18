@@ -4,6 +4,7 @@ const verificarToken = require('../../middlewares/auth.middleware');
 const {
   obtenerSesionAbierta,
   abrirCaja,
+  fondoArrastrado,
   registrarMovimiento,
   resumenSesion,
   cerrarCaja,
@@ -12,6 +13,7 @@ const {
 } = require('./caja.controller');
 
 router.get('/abierta', verificarToken, obtenerSesionAbierta);
+router.get('/fondo-arrastrado', verificarToken, fondoArrastrado);
 router.post('/abrir', verificarToken, abrirCaja);
 router.post('/movimiento', verificarToken, registrarMovimiento);
 router.get('/:id/resumen', verificarToken, resumenSesion);
