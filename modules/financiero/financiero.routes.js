@@ -6,13 +6,15 @@ const {
   listarMovimientos,
   registrarMovimiento,
   resumen,
-  listarDepositosPorCierre
+  listarDepositosPorCierre,
+  porMetodoPago
 } = require('./financiero.controller');
 
 router.get('/saldos', verificarToken, obtenerSaldos);
 router.get('/resumen', verificarToken, resumen);
 router.get('/movimientos', verificarToken, listarMovimientos);
 router.get('/depositos', verificarToken, listarDepositosPorCierre);
+router.get('/por-metodo', verificarToken, porMetodoPago);
 
 // La restricción a rol admin para pagos y retiros se valida dentro del controller,
 // porque los ingresos manuales sí los puede registrar cualquier usuario autenticado.

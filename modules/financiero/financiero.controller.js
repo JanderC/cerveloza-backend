@@ -231,12 +231,79 @@ async function listarDepositosPorCierre(req, res) {
   }
 }
 
+// GET /financiero/por-metodo — cuánto dinero entró por cada método de pago, por moneda.
+// Suma pagos de ventas (completadas y la parte cobrada de las fiadas) + abonos de clientes.
+// Los vueltos se devuelven aparte porque salen del efectivo del cajón.
+async function porMetodoPago(req, res) {
+  const { desde, hasta } = req.query;
+
+  try {
+    const params = [];
+    let filtroVentas = '';
+    let filtroAbonos = '';
+    if (desde) {
+      params.push(desde);
+      filtroVentas += ` AND v.fecha >= $${params.length}`;
+      filtroAbonos += ` AND mc.fecha >= $${params.length}`;
+    }
+    if (hasta) {
+      params.push(hasta);
+      filtroVentas += ` AND v.fecha <= $${params.length}`;
+      filtroAbonos += ` AND mc.fecha <= $${params.length}`;
+    }
+
+    const resultado = await pool.query(
+      `SELECT mp.id AS metodo_id, mp.nombre AS metodo, COALESCE(mp.es_efectivo, false) AS es_efectivo,
+              x.moneda,
+              COALESCE(SUM(x.monto) FILTER (WHERE x.origen = 'venta'), 0) AS ventas,
+              COALESCE(SUM(x.monto) FILTER (WHERE x.origen = 'abono'), 0) AS abonos,
+              COALESCE(SUM(x.monto), 0) AS total,
+              COUNT(*)::int AS cantidad
+       FROM (
+         SELECT pv.metodo_pago_id, pv.moneda, pv.monto, 'venta' AS origen
+         FROM pagos_venta pv
+         JOIN ventas v ON v.id = pv.venta_id
+         WHERE v.estado IN ('completada', 'fiado')${filtroVentas}
+         UNION ALL
+         SELECT mc.metodo_pago_id, mc.moneda, mc.monto, 'abono' AS origen
+         FROM movimientos_cuenta mc
+         WHERE mc.tipo = 'abono' AND mc.metodo_pago_id IS NOT NULL${filtroAbonos}
+       ) x
+       JOIN metodos_pago mp ON mp.id = x.metodo_pago_id
+       GROUP BY mp.id, mp.nombre, mp.es_efectivo, x.moneda
+       ORDER BY mp.nombre, x.moneda`,
+      params
+    );
+
+    const vueltos = await pool.query(
+      `SELECT v.vuelto_moneda AS moneda, COALESCE(SUM(v.vuelto_monto), 0) AS total
+       FROM ventas v
+       WHERE v.vuelto_monto > 0 AND v.estado IN ('completada', 'fiado')${filtroVentas}
+       GROUP BY v.vuelto_moneda`,
+      params
+    );
+
+    res.json({
+      metodos: resultado.rows.map((f) => ({
+        ...f,
+        ventas: Number(f.ventas),
+        abonos: Number(f.abonos),
+        total: Number(f.total)
+      })),
+      vueltos: vueltos.rows.map((f) => ({ moneda: f.moneda, total: Number(f.total) }))
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener totales por método de pago', error: error.message });
+  }
+}
+
 module.exports = {
   obtenerSaldos,
   listarMovimientos,
   registrarMovimiento,
   resumen,
   listarDepositosPorCierre,
+  porMetodoPago,
   calcularSaldos,
   esEntrada,
   MONEDAS
