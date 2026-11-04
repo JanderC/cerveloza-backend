@@ -260,12 +260,12 @@ async function porMetodoPago(req, res) {
               COALESCE(SUM(x.monto), 0) AS total,
               COUNT(*)::int AS cantidad
        FROM (
-         SELECT pv.metodo_pago_id, pv.moneda, pv.monto, 'venta' AS origen
+         SELECT pv.metodo_pago_id, pv.moneda::text AS moneda, pv.monto, 'venta' AS origen
          FROM pagos_venta pv
          JOIN ventas v ON v.id = pv.venta_id
          WHERE v.estado IN ('completada', 'fiado')${filtroVentas}
          UNION ALL
-         SELECT mc.metodo_pago_id, mc.moneda, mc.monto, 'abono' AS origen
+         SELECT mc.metodo_pago_id, COALESCE(mc.moneda_original, mc.moneda::text), COALESCE(mc.monto_original, mc.monto), 'abono' AS origen
          FROM movimientos_cuenta mc
          WHERE mc.tipo = 'abono' AND mc.metodo_pago_id IS NOT NULL${filtroAbonos}
        ) x

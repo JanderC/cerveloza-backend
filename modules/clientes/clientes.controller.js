@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { convertirAUSD, redondear } = require('../../utils/conversionMoneda');
+const { convertirAUSD, convertirEntreMonedas, redondear } = require('../../utils/conversionMoneda');
 
 // Cada cliente trae un arreglo de saldos, uno por cada moneda en la que debe (nunca un solo total en USD)
 async function listarClientesConSaldo(req, res) {
@@ -116,13 +116,23 @@ async function estadoDeCuenta(req, res) {
   }
 }
 
-// El abono se aplica SOLO a las deudas de la MISMA moneda (FIFO) — cada moneda es una cuenta separada
+// El abono se aplica SOLO a las deudas de la MISMA moneda (FIFO) — cada moneda es una cuenta separada.
+// El cliente puede pagar esa deuda en otra moneda (ej: deuda en COP pagada en Bs): se convierte con la
+// tasa vigente y lo recibido de verdad queda en moneda_original / monto_original, que es lo que usan
+// la caja y el Financiero para saber cuánto dinero entró y en qué moneda.
 async function registrarAbono(req, res) {
-  const { cliente_id, moneda, monto, metodo_pago_id, sesion_caja_id, referencia, nota } = req.body;
+  const { cliente_id, moneda, monto, moneda_pago, monto_pago, metodo_pago_id, sesion_caja_id, referencia, nota } = req.body;
   const usuario_id = req.usuario.id;
+  const pagaEnOtraMoneda = moneda_pago && moneda_pago !== moneda;
 
-  if (!cliente_id || !moneda || !monto || !metodo_pago_id) {
+  if (!cliente_id || !moneda || !metodo_pago_id || (!monto && !(pagaEnOtraMoneda && monto_pago))) {
     return res.status(400).json({ message: 'Faltan datos requeridos' });
+  }
+  if (pagaEnOtraMoneda && !['USD', 'COP', 'VES'].includes(moneda_pago)) {
+    return res.status(400).json({ message: 'Moneda de pago inválida' });
+  }
+  if (pagaEnOtraMoneda && !(Number(monto_pago) > 0)) {
+    return res.status(400).json({ message: 'Ingresa cuánto pagó el cliente' });
   }
 
   const client = await pool.connect();
@@ -135,14 +145,33 @@ async function registrarAbono(req, res) {
       throw new Error('No hay tasa de cambio registrada');
     }
     const tasa = tasaResultado.rows[0];
-    const montoRedondeado = redondear(monto, 2);
-    const montoUsdInformativo = convertirAUSD(montoRedondeado, moneda, tasa);
+
+    let montoRedondeado;
+    let montoPagoRedondeado = null;
+    if (pagaEnOtraMoneda) {
+      montoPagoRedondeado = redondear(monto_pago, 2);
+      const convertido = redondear(convertirEntreMonedas(montoPagoRedondeado, moneda_pago, moneda, tasa), 2);
+      // En "pago completo" el frontend manda también el saldo exacto: se usa si coincide con la
+      // conversión (evita que quede un saldo de centavos por redondeo); si no, manda la conversión
+      montoRedondeado = monto && Math.abs(redondear(monto, 2) - convertido) <= Math.max(1, convertido * 0.005)
+        ? redondear(monto, 2)
+        : convertido;
+    } else {
+      montoRedondeado = redondear(monto, 2);
+    }
+    if (!(montoRedondeado > 0)) {
+      throw new Error('El monto del abono debe ser mayor a cero');
+    }
+    const montoUsdInformativo = pagaEnOtraMoneda
+      ? convertirAUSD(montoPagoRedondeado, moneda_pago, tasa)
+      : convertirAUSD(montoRedondeado, moneda, tasa);
 
     const abonoResultado = await client.query(
-      `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, metodo_pago_id, sesion_caja_id, referencia, nota, usuario_id)
-       VALUES ($1, 'abono', $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO movimientos_cuenta (cliente_id, tipo, moneda, monto, monto_usd, metodo_pago_id, sesion_caja_id, referencia, nota, usuario_id, moneda_original, monto_original)
+       VALUES ($1, 'abono', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [cliente_id, moneda, montoRedondeado, montoUsdInformativo, metodo_pago_id, sesion_caja_id || null, referencia || null, nota || null, usuario_id]
+      [cliente_id, moneda, montoRedondeado, montoUsdInformativo, metodo_pago_id, sesion_caja_id || null, referencia || null, nota || null, usuario_id,
+       pagaEnOtraMoneda ? moneda_pago : null, pagaEnOtraMoneda ? montoPagoRedondeado : null]
     );
 
     // Aplica el abono a los cargos pendientes de ESA MISMA MONEDA, del más antiguo al más reciente

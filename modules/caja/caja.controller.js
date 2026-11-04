@@ -159,11 +159,11 @@ async function resumenSesion(req, res) {
 
     // Abonos en efectivo recibidos en este turno
     const abonosEfectivo = await pool.query(
-      `SELECT mc.moneda, SUM(mc.monto) AS total
+      `SELECT COALESCE(mc.moneda_original, mc.moneda::text) AS moneda, SUM(COALESCE(mc.monto_original, mc.monto)) AS total
        FROM movimientos_cuenta mc
        JOIN metodos_pago mp ON mp.id = mc.metodo_pago_id
        WHERE mc.sesion_caja_id = $1 AND mc.tipo = 'abono' AND mp.es_efectivo = true
-       GROUP BY mc.moneda`,
+       GROUP BY COALESCE(mc.moneda_original, mc.moneda::text)`,
       [id]
     );
 
@@ -254,10 +254,11 @@ async function cerrarCaja(req, res) {
         [id, moneda]
       );
       const abonos = await client.query(
-        `SELECT COALESCE(SUM(mc.monto), 0) AS total
+        `SELECT COALESCE(SUM(COALESCE(mc.monto_original, mc.monto)), 0) AS total
          FROM movimientos_cuenta mc
          JOIN metodos_pago mp ON mp.id = mc.metodo_pago_id
-         WHERE mc.sesion_caja_id = $1 AND mc.tipo = 'abono' AND mp.es_efectivo = true AND mc.moneda = $2`,
+         WHERE mc.sesion_caja_id = $1 AND mc.tipo = 'abono' AND mp.es_efectivo = true
+           AND COALESCE(mc.moneda_original, mc.moneda::text) = $2`,
         [id, moneda]
       );
 
@@ -364,7 +365,8 @@ async function movimientosDelDia(req, res) {
     );
 
     const abonos = await pool.query(
-      `SELECT mc.id, mc.moneda, mc.monto, mc.fecha, c.nombre AS cliente, mp.nombre AS metodo
+      `SELECT mc.id, COALESCE(mc.moneda_original, mc.moneda::text) AS moneda, COALESCE(mc.monto_original, mc.monto) AS monto,
+              mc.fecha, c.nombre AS cliente, mp.nombre AS metodo
        FROM movimientos_cuenta mc
        JOIN clientes c ON c.id = mc.cliente_id
        LEFT JOIN metodos_pago mp ON mp.id = mc.metodo_pago_id
